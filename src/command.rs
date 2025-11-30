@@ -228,7 +228,7 @@ pub enum CommandError<IE> {
     BadTableLength,
 }
 
-impl<IE > CommandError<IE> {
+impl<IE> CommandError<IE> {
     /// Unwrap a `CommandError` that is assumed to be of the `InterfaceError` variant, or panic if
     /// it is any other variant. This is particularly used inside the region abstractions where we
     /// assume that non-interface-related errors are prevented by the correctness checks performed

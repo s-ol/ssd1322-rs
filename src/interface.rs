@@ -53,8 +53,8 @@ pub mod spi {
 
     impl<SPI, DC> SpiInterface<SPI, DC>
     where
-        SPI: hal::spi::FullDuplex<u8>,
-        DC: hal::digital::v2::OutputPin,
+        SPI: hal::spi::SpiDevice<u8>,
+        DC: hal::digital::OutputPin,
     {
         /// Create a new SPI interface to communicate with the display driver. `spi` is the SPI
         /// master device, and `dc` is the GPIO output pin connected to the D/C pin of the SSD1322.
@@ -65,36 +65,40 @@ pub mod spi {
 
     impl<SPI, DC> DisplayInterface for SpiInterface<SPI, DC>
     where
-        SPI: hal::spi::FullDuplex<u8>,
-        DC: hal::digital::v2::OutputPin,
+        SPI: hal::spi::SpiDevice<u8>,
+        DC: hal::digital::OutputPin,
     {
         type Error = SpiInterfaceError<
-            <DC as hal::digital::v2::OutputPin>::Error,
-            <SPI as hal::spi::FullDuplex<u8>>::Error,
+            <DC as hal::digital::ErrorType>::Error,
+            <SPI as hal::spi::ErrorType>::Error,
         >;
 
         /// Send a command word to the display's command register. Synchronous.
         fn send_command(&mut self, cmd: u8) -> Result<(), Self::Error> {
             // The SPI device has FIFOs that we must ensure are drained before the bus will
             // quiesce. This must happen before asserting DC for a command.
-            while let Ok(_) = self.spi.read() {
+            let mut buf = [0 as u8; 1];
+            while let Ok(_) = self.spi.read(&mut buf) {
                 self.dc.set_high().map_err(Self::Error::from_dc)?;
             }
             self.dc.set_low().map_err(Self::Error::from_dc)?;
-            let bus_op = nb::block!(self.spi.send(cmd))
-                .and_then(|_| nb::block!(self.spi.read()))
-                .map_err(Self::Error::from_spi)
-                .map(core::mem::drop);
+            let bus_op = self
+                .spi
+                .write(&[cmd])
+                .and_then(|_| self.spi.read(&mut buf))
+                .map_err(Self::Error::from_spi);
             self.dc.set_high().map_err(Self::Error::from_dc)?;
             bus_op
         }
 
         /// Send a sequence of data words to the display from a buffer. Synchronous.
         fn send_data(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
-            for word in buf {
-                nb::block!(self.spi.send(word.clone())).map_err(Self::Error::from_spi)?;
-                nb::block!(self.spi.read()).map_err(Self::Error::from_spi)?;
-            }
+            self.spi.write(buf).map_err(Self::Error::from_spi)?;
+            // ,let mut buf = [0 as u8; 1];
+            // ,for word in buf {
+            // ,    nb::block!(self.spi.write(word.clone())).map_err(Self::Error::from_spi)?;
+            // ,    nb::block!(self.spi.read(&mut buf)).map_err(Self::Error::from_spi)?;
+            // ,}
             Ok(())
         }
 
@@ -102,13 +106,15 @@ pub mod spi {
         /// the hardware FIFO is full, returns `WouldBlock` which means the word was not accepted
         /// and should be retried later.
         fn send_data_async(&mut self, word: u8) -> nb::Result<(), Self::Error> {
-            match self.spi.send(word) {
+            let mut buf = [0 as u8; 1];
+            match self.spi.write(&[word]) {
                 Ok(()) => {
-                    let _ = self.spi.read();
+                    let _ = self.spi.read(&mut buf);
                     Ok(())
                 }
-                Err(nb::Error::Other(e)) => Err(nb::Error::Other(Self::Error::from_spi(e))),
-                Err(nb::Error::WouldBlock) => Err(nb::Error::WouldBlock),
+                Err(e) => Err(nb::Error::Other(Self::Error::from_spi(e))),
+                // Err(nb::Error::Other(e)) => Err(nb::Error::Other(Self::Error::from_spi(e))),
+                // Err(nb::Error::WouldBlock) => Err(nb::Error::WouldBlock),
             }
         }
     }

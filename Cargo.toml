@@ -14,7 +14,7 @@ exclude = [
 ]
 
 [dependencies]
-embedded-hal = "0.2"
+embedded-hal = "1.0"
 nb = "0.1"
 
 [dependencies.itertools]
