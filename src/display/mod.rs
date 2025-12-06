@@ -37,10 +37,7 @@ pub struct PixelCoord(pub i16, pub i16);
     sync(keep_self),
     async(
         feature = "async",
-        idents(
-            PersistentConfig,
-            WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"),
-        )
+        idents(WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"))
     )
 )]
 pub struct Display<DI>
@@ -50,7 +47,6 @@ where
     iface: DI,
     display_size: PixelCoord,
     display_offset: PixelCoord,
-    persistent_config: Option<PersistentConfig>,
 }
 
 #[maybe_async_cfg::maybe(
@@ -98,7 +94,6 @@ where
             iface: iface,
             display_size: display_size,
             display_offset: display_offset,
-            persistent_config: None,
         }
     }
 
@@ -112,7 +107,6 @@ where
             .send(&mut self.iface)
             .await?;
         config.send(&mut self.iface).await?;
-        self.persistent_config = Some(config.persistent_config);
         Command::SetMuxRatio(self.display_size.1 as u8)
             .send(&mut self.iface)
             .await?;
@@ -120,16 +114,6 @@ where
             .send(&mut self.iface)
             .await?;
         Command::SetStartLine(0).send(&mut self.iface).await?;
-        self.persistent_config
-            .as_ref()
-            .unwrap()
-            .send(
-                &mut self.iface,
-                IncrementAxis::Horizontal,
-                ColumnRemap::Forward,
-                NibbleRemap::Forward,
-            )
-            .await?;
         self.sleep(false).await?;
         Command::SetDisplayMode(DisplayMode::Normal)
             .send(&mut self.iface)

@@ -7,55 +7,15 @@ use crate::command::*;
 use display_interface::AsyncWriteOnlyDataCommand;
 use display_interface::{DisplayError, WriteOnlyDataCommand};
 
-/// The portion of the configuration which will persist inside the `Display` because it shares
-/// registers with functions that can be changed after initialization. This allows the rest of the
-/// `Config` struct to be thrown away to save RAM after `Display::init` finishes.
-#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async"))]
-pub(crate) struct PersistentConfig {
-    com_scan_direction: ComScanDirection,
-    com_layout: ComLayout,
-}
-
-#[maybe_async_cfg::maybe(
-    sync(keep_self),
-    async(
-        feature = "async",
-        idents(Command, WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"))
-    )
-)]
-impl PersistentConfig {
-    /// Transmit commands to the display at `iface` necessary to put that display into the
-    /// configuration encoded in `self`.
-    pub(crate) async fn send<DI>(
-        &self,
-        iface: &mut DI,
-        increment_axis: IncrementAxis,
-        column_remap: ColumnRemap,
-        nibble_remap: NibbleRemap,
-    ) -> Result<(), CommandError<DisplayError>>
-    where
-        DI: WriteOnlyDataCommand,
-    {
-        Command::SetRemapping(
-            increment_axis,
-            column_remap,
-            nibble_remap,
-            self.com_scan_direction,
-            self.com_layout,
-        )
-        .send(iface)
-        .await
-    }
-}
-
 /// A configuration for the display. Builder methods offer a declarative way to either sent a
 /// configuration command at init time, or to leave it at the chip's POR default.
-#[maybe_async_cfg::maybe(
-    sync(keep_self),
-    async(feature = "async", idents(Command, PersistentConfig))
-)]
+#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async", idents(Command)))]
 pub struct Config {
-    pub(crate) persistent_config: PersistentConfig,
+    com_scan_direction: ComScanDirection,
+    com_layout: ComLayout,
+    increment_axis: IncrementAxis,
+    column_remap: ColumnRemap,
+    nibble_remap: NibbleRemap,
     contrast_current_cmd: Option<Command>,
     phase_lengths_cmd: Option<Command>,
     clock_fosc_divset_cmd: Option<Command>,
@@ -69,11 +29,7 @@ pub struct Config {
     sync(keep_self),
     async(
         feature = "async",
-        idents(
-            Command,
-            PersistentConfig,
-            WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand")
-        )
+        idents(Command, WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"))
     )
 )]
 impl Config {
@@ -83,10 +39,11 @@ impl Config {
     /// methods on `Config`.
     pub fn new(com_scan_direction: ComScanDirection, com_layout: ComLayout) -> Self {
         Config {
-            persistent_config: PersistentConfig {
-                com_scan_direction: com_scan_direction,
-                com_layout: com_layout,
-            },
+            com_scan_direction: com_scan_direction,
+            com_layout: com_layout,
+            increment_axis: IncrementAxis::Horizontal,
+            column_remap: ColumnRemap::Forward,
+            nibble_remap: NibbleRemap::Forward,
             contrast_current_cmd: None,
             phase_lengths_cmd: None,
             clock_fosc_divset_cmd: None,
@@ -94,6 +51,33 @@ impl Config {
             second_precharge_period_cmd: None,
             precharge_voltage_cmd: None,
             com_deselect_voltage_cmd: None,
+        }
+    }
+
+    /// Extend this `Config` to explicitly configure the increment axis. See
+    /// `Command::SetRemapping`.
+    pub fn increment_axis(self, increment_axis: IncrementAxis) -> Self {
+        Self {
+            increment_axis,
+            ..self
+        }
+    }
+
+    /// Extend this `Config` to explicitly configure the column remapping. See
+    /// `Command::SetRemapping`.
+    pub fn column_remap(self, column_remap: ColumnRemap) -> Self {
+        Self {
+            column_remap,
+            ..self
+        }
+    }
+
+    /// Extend this `Config` to explicitly configure the nibble remapping. See
+    /// `Command::SetRemapping`.
+    pub fn nibble_remap(self, nibble_remap: NibbleRemap) -> Self {
+        Self {
+            nibble_remap,
+            ..self
         }
     }
 
@@ -169,6 +153,16 @@ impl Config {
     where
         DI: WriteOnlyDataCommand,
     {
+        Command::SetRemapping(
+            self.increment_axis,
+            self.column_remap,
+            self.nibble_remap,
+            self.com_scan_direction,
+            self.com_layout,
+        )
+        .send(iface)
+        .await?;
+
         for maybe_cmd in [
             self.phase_lengths_cmd,
             self.contrast_current_cmd,
