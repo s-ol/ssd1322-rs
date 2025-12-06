@@ -6,9 +6,12 @@
 use itertools::iproduct;
 
 use crate::command::consts::*;
-use crate::display::region::{Pack8to4, Region};
+use crate::display::region::*;
 use crate::display::PixelCoord;
-use crate::interface;
+
+#[cfg(feature = "async")]
+use display_interface::AsyncWriteOnlyDataCommand;
+use display_interface::{DisplayError, WriteOnlyDataCommand};
 
 /// A handle to a rectangular region which can be drawn into, but which is permitted to have
 /// portions that lie outside the viewable area of the display. Pixels that fall outside the
@@ -21,9 +24,16 @@ use crate::interface;
 ///
 /// These are intended to be short-lived, and contain a mutable borrow of the display that issued
 /// them so clashing writes are prevented.
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(Region, WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"),)
+    )
+)]
 pub struct OverscannedRegion<'di, DI>
 where
-    DI: 'di + interface::DisplayInterface,
+    DI: 'di + WriteOnlyDataCommand,
 {
     viewable_region: Option<Region<'di, DI>>,
     upper_left: PixelCoord,
@@ -44,9 +54,16 @@ fn in_range<T: PartialOrd>(x: T, lo: T, hi: T) -> bool {
     x >= lo && x < hi
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(Region, WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"),)
+    )
+)]
 impl<'di, DI> OverscannedRegion<'di, DI>
 where
-    DI: 'di + interface::DisplayInterface,
+    DI: 'di + WriteOnlyDataCommand,
 {
     /// Construct a new region. This is only called by the factory method
     /// `Display::overscanned_region`, which checks the region coordinates are correctly ordered,
@@ -87,7 +104,7 @@ where
     /// values of horizontally-adjacent pixels. Pixels are drawn left-to-right and top-to-bottom.
     /// The sequence of pixels is filtered such that only pixels which intersect the displayable
     /// area are transmitted to the hardware.
-    pub fn draw_packed<I>(&mut self, iter: I) -> Result<(), DI::Error>
+    pub async fn draw_packed<I>(&mut self, iter: I) -> Result<(), DisplayError>
     where
         I: Iterator<Item = u8>,
     {
@@ -109,17 +126,18 @@ where
             .as_mut()
             .unwrap()
             .draw_packed(only_viewable)
+            .await
     }
 
     /// Draw unpacked pixel image data into the region, where each byte independently represents a
     /// single pixel intensity value in the range [0, 15]. Pixels are drawn left-to-right and
     /// top-to-bottom. The sequence of pixels is filtered such that only pixels which intersect the
     /// displayable area are transmitted to the hardware.
-    pub fn draw<I>(&mut self, iter: I) -> Result<(), DI::Error>
+    pub async fn draw<I>(&mut self, iter: I) -> Result<(), DisplayError>
     where
         I: Iterator<Item = u8>,
     {
-        self.draw_packed(Pack8to4(iter))
+        self.draw_packed(Pack8to4(iter)).await
     }
 }
 

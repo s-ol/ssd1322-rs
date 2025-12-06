@@ -1,17 +1,27 @@
 //! Region abstraction for drawing into rectangular regions of the display.
 
-use nb;
-
 use crate::command::{BufCommand, Command, CommandError};
+#[cfg(feature = "async")]
+use crate::command::{BufCommandAsync, CommandAsync};
 use crate::display::PixelCoord;
-use crate::interface;
+
+#[cfg(feature = "async")]
+use display_interface::AsyncWriteOnlyDataCommand;
+use display_interface::{DataFormat::U8Iter, DisplayError, WriteOnlyDataCommand};
 
 /// A handle to a rectangular region of a display which can be drawn into. These are intended to be
 /// short-lived, and contain a mutable borrow of the display that issued them so clashing writes
 /// are prevented.
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(Command, WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"),)
+    )
+)]
 pub struct Region<'di, DI>
 where
-    DI: 'di + interface::DisplayInterface,
+    DI: 'di + WriteOnlyDataCommand,
 {
     iface: &'di mut DI,
     top: u8,
@@ -21,9 +31,20 @@ where
     pixel_cols: u16,
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            Command,
+            BufCommand,
+            WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"),
+        )
+    )
+)]
 impl<'di, DI> Region<'di, DI>
 where
-    DI: 'di + interface::DisplayInterface,
+    DI: 'di + WriteOnlyDataCommand,
 {
     /// Construct a new region. This is only called by the factory method `Display::region`, which
     /// checks that the region coordinates are within the viewable area and correctly ordered, and
@@ -42,65 +63,40 @@ where
 
     /// Draw packed-pixel image data into the region, such that each byte is two 4-bit gray scale
     /// values of horizontally-adjacent pixels. Pixels are drawn left-to-right and top-to-bottom.
-    pub fn draw_packed<I>(&mut self, mut iter: I) -> Result<(), DI::Error>
+    pub async fn draw_packed<I>(&mut self, iter: I) -> Result<(), DisplayError>
     where
         I: Iterator<Item = u8>,
     {
         // Set the row and column address registers and put the display in write mode. Unwrap all
         // of the CommandErrors in this scope as interface errors, as all bounds checking should be
         // done by the time we are here.
-        (|| {
-            Command::SetColumnAddress(self.buf_left, self.buf_left + self.buf_cols - 1)
-                .send(self.iface)?;
-            Command::SetRowAddress(self.top, self.top + self.rows - 1).send(self.iface)?;
-            BufCommand::WriteImageData(&[]).send(self.iface)?;
-            Ok(())
-        })()
-        .map_err(CommandError::unwrap_interface)?;
+        Command::SetColumnAddress(self.buf_left, self.buf_left + self.buf_cols - 1)
+            .send(self.iface)
+            .await
+            .map_err(CommandError::unwrap_interface)?;
+        Command::SetRowAddress(self.top, self.top + self.rows - 1)
+            .send(self.iface)
+            .await
+            .map_err(CommandError::unwrap_interface)?;
+        BufCommand::WriteImageData(&[])
+            .send(self.iface)
+            .await
+            .map_err(CommandError::unwrap_interface)?;
 
-        // Paint the region using asynchronous writes so that iter.next() may run concurrently with
-        // the SPI write cycle for a small throughput win.
         let region_total_bytes = self.pixel_cols as usize * self.rows as usize / 2;
-        let mut total_written = 0;
-        let mut next_byte: u8;
-
-        loop {
-            // Break early if we have copied enough bytes to exactly fill the region.
-            if total_written >= region_total_bytes {
-                break;
-            }
-
-            // Break early if the iterator runs out of bytes.
-            match iter.next() {
-                Some(pixels) => {
-                    total_written += 1;
-                    next_byte = pixels;
-                }
-                None => break,
-            }
-
-            // Write the byte to the interface FIFO. If the FIFO is full then poll it until the
-            // send succeeds before continuing the outer loop to consume the next byte from the
-            // iterator.
-            loop {
-                match self.iface.send_data_async(next_byte) {
-                    Ok(()) => break,
-                    Err(nb::Error::WouldBlock) => {}
-                    Err(nb::Error::Other(e)) => return Err(e),
-                }
-            }
-        }
-        Ok(())
+        self.iface
+            .send_data(U8Iter(&mut iter.take(region_total_bytes)))
+            .await
     }
 
     /// Draw unpacked pixel image data into the region, where each byte independently represents a
     /// single pixel intensity value in the range [0, 15]. Pixels are drawn left-to-right and
     /// top-to-bottom.
-    pub fn draw<I>(&mut self, iter: I) -> Result<(), DI::Error>
+    pub async fn draw<I>(&mut self, iter: I) -> Result<(), DisplayError>
     where
         I: Iterator<Item = u8>,
     {
-        self.draw_packed(Pack8to4(iter))
+        self.draw_packed(Pack8to4(iter)).await
     }
 }
 

@@ -35,18 +35,20 @@
 //!
 //! Example code is available in the `examples` folder.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(feature = "std")]
+#![no_std]
 extern crate core;
 
 pub mod command;
 pub mod config;
 pub mod display;
-pub mod interface;
 
 // Re-exports for primary API.
 pub use crate::command::{consts, ComLayout, ComScanDirection};
 pub use crate::config::Config;
 pub use crate::display::{Display, PixelCoord};
-pub use crate::interface::spi::SpiInterface;
+
+#[cfg(feature = "async")]
+pub use crate::config::ConfigAsync;
+
+#[cfg(feature = "async")]
+pub use crate::display::DisplayAsync;

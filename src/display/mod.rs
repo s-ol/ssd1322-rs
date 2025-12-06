@@ -19,10 +19,13 @@ pub mod region;
 
 use crate::command::consts::*;
 use crate::command::*;
-use crate::config::{Config, PersistentConfig};
-use crate::display::overscanned_region::OverscannedRegion;
-use crate::display::region::Region;
-use crate::interface;
+use crate::config::*;
+use crate::display::overscanned_region::*;
+use crate::display::region::*;
+
+#[cfg(feature = "async")]
+use display_interface::AsyncWriteOnlyDataCommand;
+use display_interface::{DisplayError, WriteOnlyDataCommand};
 
 /// A pixel coordinate pair of `column` and `row`. `column` must be in the range [0,
 /// `consts::PIXEL_COL_MAX`], and `row` must be in the range [0, `consts::PIXEL_ROW_MAX`].
@@ -30,9 +33,19 @@ use crate::interface;
 pub struct PixelCoord(pub i16, pub i16);
 
 /// A driver for an SSD1322 display.
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            PersistentConfig,
+            WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"),
+        )
+    )
+)]
 pub struct Display<DI>
 where
-    DI: interface::DisplayInterface,
+    DI: WriteOnlyDataCommand,
 {
     iface: DI,
     display_size: PixelCoord,
@@ -40,9 +53,23 @@ where
     persistent_config: Option<PersistentConfig>,
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            Config,
+            Command,
+            BufCommand,
+            Region,
+            OverscannedRegion,
+            WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"),
+        )
+    )
+)]
 impl<DI> Display<DI>
 where
-    DI: interface::DisplayInterface,
+    DI: WriteOnlyDataCommand,
 {
     /// Construct a new display driver for a display with viewable dimensions `display_size`, which
     /// is connected to the interface `iface`.
@@ -76,37 +103,59 @@ where
     }
 
     /// Initialize the display with a config message.
-    pub fn init(&mut self, config: Config) -> Result<(), CommandError<DI::Error>> {
-        self.sleep(true)?;
-        Command::SetDisplayMode(DisplayMode::BlankDark).send(&mut self.iface)?;
-        config.send(&mut self.iface)?;
+    pub async fn init(&mut self, config: Config) -> Result<(), CommandError<DisplayError>> {
+        self.sleep(true).await?;
+        Command::SetDisplayMode(DisplayMode::BlankDark)
+            .send(&mut self.iface)
+            .await?;
+        Command::SetDefaultGrayScaleTable
+            .send(&mut self.iface)
+            .await?;
+        config.send(&mut self.iface).await?;
         self.persistent_config = Some(config.persistent_config);
-        Command::SetMuxRatio(self.display_size.1 as u8).send(&mut self.iface)?;
-        Command::SetDisplayOffset(self.display_offset.1 as u8).send(&mut self.iface)?;
-        Command::SetStartLine(0).send(&mut self.iface)?;
-        self.persistent_config.as_ref().unwrap().send(
-            &mut self.iface,
-            IncrementAxis::Horizontal,
-            ColumnRemap::Forward,
-            NibbleRemap::Forward,
-        )?;
-        self.sleep(false)?;
-        Command::SetDisplayMode(DisplayMode::Normal).send(&mut self.iface)
+        Command::SetMuxRatio(self.display_size.1 as u8)
+            .send(&mut self.iface)
+            .await?;
+        Command::SetDisplayOffset(self.display_offset.1 as u8)
+            .send(&mut self.iface)
+            .await?;
+        Command::SetStartLine(0).send(&mut self.iface).await?;
+        self.persistent_config
+            .as_ref()
+            .unwrap()
+            .send(
+                &mut self.iface,
+                IncrementAxis::Horizontal,
+                ColumnRemap::Forward,
+                NibbleRemap::Forward,
+            )
+            .await?;
+        self.sleep(false).await?;
+        Command::SetDisplayMode(DisplayMode::Normal)
+            .send(&mut self.iface)
+            .await
     }
 
     /// Control sleep mode.
-    pub fn sleep(&mut self, enabled: bool) -> Result<(), CommandError<DI::Error>> {
-        Command::SetSleepMode(enabled).send(&mut self.iface)
+    pub async fn sleep(&mut self, enabled: bool) -> Result<(), CommandError<DisplayError>> {
+        Command::SetSleepMode(enabled).send(&mut self.iface).await
     }
 
     /// Control the master contrast.
-    pub fn contrast(&mut self, contrast: u8) -> Result<(), CommandError<DI::Error>> {
-        Command::SetMasterContrast(contrast).send(&mut self.iface)
+    pub async fn contrast(&mut self, contrast: u8) -> Result<(), CommandError<DisplayError>> {
+        Command::SetMasterContrast(contrast)
+            .send(&mut self.iface)
+            .await
     }
 
     /// Set the display brightness look-up table.
-    pub fn gray_scale_table(&mut self, table: &[u8]) -> Result<(), CommandError<DI::Error>> {
-        BufCommand::SetGrayScaleTable(table).send(&mut self.iface)
+    pub async fn gray_scale_table(
+        &mut self,
+        table: &[u8],
+    ) -> Result<(), CommandError<DisplayError>> {
+        BufCommand::SetGrayScaleTable(table)
+            .send(&mut self.iface)
+            .await
     }
 
     /// Set the vertical pan.
@@ -114,8 +163,8 @@ where
     /// This uses the `Command::SetStartLine` feature to shift the display RAM row addresses
     /// relative to the active set of COM lines, allowing any display-height-sized window of the
     /// entire 128 rows of display RAM to be made visible.
-    pub fn vertical_pan(&mut self, offset: u8) -> Result<(), CommandError<DI::Error>> {
-        Command::SetStartLine(offset).send(&mut self.iface)
+    pub async fn vertical_pan(&mut self, offset: u8) -> Result<(), CommandError<DisplayError>> {
+        Command::SetStartLine(offset).send(&mut self.iface).await
     }
 
     /// Construct a rectangular region onto which to draw image data.
@@ -131,7 +180,7 @@ where
         &'di mut self,
         upper_left: PixelCoord,
         lower_right: PixelCoord,
-    ) -> Result<Region<'di, DI>, CommandError<DI::Error>> {
+    ) -> Result<Region<'di, DI>, CommandError<DisplayError>> {
         // The row fields are bounds-checked against the chip's maximum supported row rather than
         // the display size, because the display supports vertical scrolling by adding an offset to
         // the memory address that corresponds to row 0 (`SetStartLine` command). This feature
@@ -178,7 +227,7 @@ where
         &'di mut self,
         upper_left: PixelCoord,
         lower_right: PixelCoord,
-    ) -> Result<OverscannedRegion<'di, DI>, CommandError<DI::Error>> {
+    ) -> Result<OverscannedRegion<'di, DI>, CommandError<DisplayError>> {
         if false
             || upper_left.0 >= lower_right.0
             || upper_left.1 >= lower_right.1

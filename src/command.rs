@@ -6,7 +6,10 @@
 //! there is a "column" address, these refer to horizontal groups of 2 bytes driving 4 pixels.
 
 use crate::command::consts::*;
-use crate::interface::DisplayInterface;
+
+#[cfg(feature = "async")]
+use display_interface::AsyncWriteOnlyDataCommand;
+use display_interface::{DataFormat::U8, DisplayError, WriteOnlyDataCommand};
 
 pub mod consts {
     //! Constants describing max supported display size and the display RAM layout.
@@ -119,6 +122,7 @@ pub enum DisplayMode {
 /// Enumerates most of the valid commands that can be sent to the SSD1322 along with their
 /// parameter values. Commands which accept an array of similar "arguments" as a slice are encoded
 /// by `BufCommand` instead to avoid lifetime parameters on this enum.
+#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async"))]
 #[derive(Clone, Copy)]
 pub enum Command {
     /// Enable the gray scale gamma table (see `BufCommand::SetGrayScaleTable`).
@@ -203,6 +207,7 @@ pub enum Command {
 /// Enumerates commands that can be sent to the SSD1322 which accept a slice argument buffer. This
 /// is separated from `Command` so that the lifetime parameter of the argument buffer slice does
 /// not pervade code which never invokes these two commands.
+#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async"))]
 pub enum BufCommand<'buf> {
     /// Set the gray scale gamma table. Each byte 0-14 can range from 0-180 and sets the pixel
     /// drive pulse width in DCLKs. Bytes 0->14 adjust the gamma setting for grayscale levels
@@ -219,7 +224,7 @@ pub enum BufCommand<'buf> {
 /// Errors that can occur in commands.
 #[derive(Debug, PartialEq)]
 pub enum CommandError<IE> {
-    /// The underlying `DisplayInterface` gave an error while trying to issue the command to the
+    /// The underlying `WriteOnlyDataCommand` gave an error while trying to issue the command to the
     /// hardware.
     InterfaceError(IE),
     /// An argument to the command was outside of the valid range.
@@ -257,11 +262,18 @@ macro_rules! ok_command {
     }};
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"))
+    )
+)]
 impl Command {
     /// Transmit the command encoded by `self` to the display on interface `iface`.
-    pub fn send<DI>(self, iface: &mut DI) -> Result<(), CommandError<DI::Error>>
+    pub async fn send<DI>(self, iface: &mut DI) -> Result<(), CommandError<DisplayError>>
     where
-        DI: DisplayInterface,
+        DI: WriteOnlyDataCommand,
     {
         let mut arg_buf = [0u8; 2];
         let (cmd, data) = match self {
@@ -391,23 +403,32 @@ impl Command {
             }
         }?;
         iface
-            .send_command(cmd)
+            .send_commands(U8(&[cmd]))
+            .await
             .map_err(|e| CommandError::InterfaceError(e))?;
         if data.len() == 0 {
             Ok(())
         } else {
             iface
-                .send_data(data)
+                .send_data(U8(data))
+                .await
                 .map_err(|e| CommandError::InterfaceError(e))
         }
     }
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(WriteOnlyDataCommand(async = "AsyncWriteOnlyDataCommand"))
+    )
+)]
 impl<'a> BufCommand<'a> {
     /// Transmit the command encoded by `self` to the display on interface `iface`.
-    pub fn send<DI>(self, iface: &mut DI) -> Result<(), CommandError<DI::Error>>
+    pub async fn send<DI>(self, iface: &mut DI) -> Result<(), CommandError<DisplayError>>
     where
-        DI: DisplayInterface,
+        DI: WriteOnlyDataCommand,
     {
         let (cmd, data) = match self {
             BufCommand::SetGrayScaleTable(table) => {
@@ -432,13 +453,15 @@ impl<'a> BufCommand<'a> {
             BufCommand::WriteImageData(buf) => Ok((0x5C, buf)),
         }?;
         iface
-            .send_command(cmd)
+            .send_commands(U8(&[cmd]))
+            .await
             .map_err(|e| CommandError::InterfaceError(e))?;
         if data.len() == 0 {
             Ok(())
         } else {
             iface
-                .send_data(data)
+                .send_data(U8(data))
+                .await
                 .map_err(|e| CommandError::InterfaceError(e))
         }
     }

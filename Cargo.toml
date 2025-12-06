@@ -14,13 +14,13 @@ exclude = [
 ]
 
 [dependencies]
-embedded-hal = "1.0"
-nb = "0.1"
+display-interface = "0.5"
+maybe-async-cfg = "0.2"
 
 [dependencies.itertools]
 version = "0.7"
 default-features = false
 
 [features]
-default = ["std"]
-std = []
+default = ["async"]
+async = []
