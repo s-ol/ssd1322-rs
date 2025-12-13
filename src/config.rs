@@ -7,7 +7,7 @@ use crate::command::*;
 use display_interface::AsyncWriteOnlyDataCommand;
 use display_interface::{DisplayError, WriteOnlyDataCommand};
 
-/// A configuration for the display. Builder methods offer a declarative way to either sent a
+/// A configuration for the display. Builder methods offer a declarative way to either send a
 /// configuration command at init time, or to leave it at the chip's POR default.
 #[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async", idents(Command)))]
 pub struct Config {

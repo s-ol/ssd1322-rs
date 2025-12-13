@@ -3,13 +3,13 @@
 ![Newhaven OLED display showing Ferris and the Rust logo](ferris-on-nhd.jpg)
 
 Pure Rust driver for the SSD1322 OLED display chip, for use with
-[embedded-hal](https://crates.io/crates/embedded-hal).
+[display-interface](https://crates.io/crates/display-interface).
 
 ## Description
 
 This driver is intended to work on embedded platforms using the `embedded-hal`
 trait library. It is `no_std`, contains no added `unsafe`, and does not require
-an allocator. The initial release supports the 4-wire SPI interface.
+an allocator. Both sync and `async` implementations are provided.
 
 Because the SSD1322 supports displays as large as 480x128 @ 4bpp, the primary
 API uses a `Region` abstraction to allow writing a stream of pixel data from an
@@ -31,6 +31,8 @@ would consume a colossal (for a μC) 30kiB of RAM.
 inspiration.
 [japaric/embedded-hal](https://github.com/japaric/embedded-hal) for making
 dealing with embedded hardware easy, safe, and enjoyable.
+[therealprof/display_interface](https://github.com/therealprof/display-interface)
+for an abstract display interface.
 
 ## License
 
