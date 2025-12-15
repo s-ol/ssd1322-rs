@@ -17,11 +17,15 @@ pub mod testing {
 pub mod overscanned_region;
 pub mod region;
 
-use crate::command::consts::*;
-use crate::command::*;
-use crate::config::*;
-use crate::display::overscanned_region::*;
-use crate::display::region::*;
+use crate::{
+    command::consts::*, command::*, config::Config, display::overscanned_region::OverscannedRegion,
+    display::region::Region,
+};
+#[cfg(feature = "async")]
+use crate::{
+    config::ConfigAsync, display::overscanned_region::OverscannedRegionAsync,
+    display::region::RegionAsync,
+};
 
 #[cfg(feature = "async")]
 use display_interface::AsyncWriteOnlyDataCommand;

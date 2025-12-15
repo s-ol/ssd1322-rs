@@ -50,12 +50,11 @@ pub mod config;
 pub mod display;
 
 // Re-exports for primary API.
-pub use crate::command::{consts, ComLayout, ComScanDirection};
-pub use crate::config::Config;
-pub use crate::display::{Display, PixelCoord};
+pub use crate::{
+    command::{consts, ComLayout, ComScanDirection},
+    config::Config,
+    display::{Display, PixelCoord},
+};
 
 #[cfg(feature = "async")]
-pub use crate::config::ConfigAsync;
-
-#[cfg(feature = "async")]
-pub use crate::display::DisplayAsync;
+pub use crate::{config::ConfigAsync, display::DisplayAsync};

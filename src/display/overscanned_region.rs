@@ -5,9 +5,7 @@
 
 use itertools::iproduct;
 
-use crate::command::consts::*;
-use crate::display::region::*;
-use crate::display::PixelCoord;
+use crate::{command::consts::*, display::region::*, display::PixelCoord};
 
 #[cfg(feature = "async")]
 use display_interface::AsyncWriteOnlyDataCommand;

@@ -1,9 +1,11 @@
 //! Region abstraction for drawing into rectangular regions of the display.
 
-use crate::command::{BufCommand, Command, CommandError};
 #[cfg(feature = "async")]
 use crate::command::{BufCommandAsync, CommandAsync};
-use crate::display::PixelCoord;
+use crate::{
+    command::{BufCommand, Command, CommandError},
+    display::PixelCoord,
+};
 
 #[cfg(feature = "async")]
 use display_interface::AsyncWriteOnlyDataCommand;
