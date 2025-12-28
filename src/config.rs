@@ -2,20 +2,35 @@
 //! relatively-static configuration.
 
 use crate::command::*;
-use crate::interface;
+#[cfg(feature = "async")]
+use crate::command::CommandAsync;
+use crate::interface::DisplayInterface;
+#[cfg(feature = "async")]
+use crate::interface::DisplayInterfaceAsync;
 
 /// The portion of the configuration which will persist inside the `Display` because it shares
 /// registers with functions that can be changed after initialization. This allows the rest of the
 /// `Config` struct to be thrown away to save RAM after `Display::init` finishes.
+#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async"))]
 pub(crate) struct PersistentConfig {
     com_scan_direction: ComScanDirection,
     com_layout: ComLayout,
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            DisplayInterface(async = "DisplayInterfaceAsync"),
+            Command(async = "CommandAsync")
+        )
+    )
+)]
 impl PersistentConfig {
     /// Transmit commands to the display at `iface` necessary to put that display into the
     /// configuration encoded in `self`.
-    pub(crate) fn send<DI>(
+    pub(crate) async fn send<DI>(
         &self,
         iface: &mut DI,
         increment_axis: IncrementAxis,
@@ -23,7 +38,7 @@ impl PersistentConfig {
         nibble_remap: NibbleRemap,
     ) -> Result<(), CommandError<DI::Error>>
     where
-        DI: interface::DisplayInterface,
+        DI: DisplayInterface,
     {
         Command::SetRemapping(
             increment_axis,
@@ -33,11 +48,22 @@ impl PersistentConfig {
             self.com_layout,
         )
         .send(iface)
+        .await
     }
 }
 
 /// A configuration for the display. Builder methods offer a declarative way to either sent a
 /// configuration command at init time, or to leave it at the chip's POR default.
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            Command(async = "CommandAsync"),
+            PersistentConfig(async = "PersistentConfigAsync")
+        )
+    )
+)]
 pub struct Config {
     pub(crate) persistent_config: PersistentConfig,
     contrast_current_cmd: Option<Command>,
@@ -49,6 +75,16 @@ pub struct Config {
     com_deselect_voltage_cmd: Option<Command>,
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            Command(async = "CommandAsync"),
+            PersistentConfig(async = "PersistentConfigAsync")
+        )
+    )
+)]
 impl Config {
     /// Create a new configuration. COM scan direction and COM layout are mandatory because the
     /// display will not function correctly unless they are set, so they must be provided in the
@@ -135,26 +171,46 @@ impl Config {
             ..self
         }
     }
+}
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            DisplayInterface(async = "DisplayInterfaceAsync"),
+            Command(async = "CommandAsync")
+        )
+    )
+)]
+impl Config {
     /// Transmit commands to the display at `iface` necessary to put that display into the
     /// configuration encoded in `self`.
-    pub(crate) fn send<DI>(&self, iface: &mut DI) -> Result<(), CommandError<DI::Error>>
+    pub(crate) async fn send<DI>(&self, iface: &mut DI) -> Result<(), CommandError<DI::Error>>
     where
-        DI: interface::DisplayInterface,
+        DI: DisplayInterface,
     {
-        self.phase_lengths_cmd.map_or(Ok(()), |c| c.send(iface))?;
-        self.contrast_current_cmd
-            .map_or(Ok(()), |c| c.send(iface))?;
-        self.clock_fosc_divset_cmd
-            .map_or(Ok(()), |c| c.send(iface))?;
-        self.display_enhancements_cmd
-            .map_or(Ok(()), |c| c.send(iface))?;
-        self.second_precharge_period_cmd
-            .map_or(Ok(()), |c| c.send(iface))?;
-        self.precharge_voltage_cmd
-            .map_or(Ok(()), |c| c.send(iface))?;
-        self.com_deselect_voltage_cmd
-            .map_or(Ok(()), |c| c.send(iface))?;
+        if let Some(c) = self.phase_lengths_cmd {
+            c.send(iface).await?;
+        }
+        if let Some(c) = self.contrast_current_cmd {
+            c.send(iface).await?;
+        }
+        if let Some(c) = self.clock_fosc_divset_cmd {
+            c.send(iface).await?;
+        }
+        if let Some(c) = self.display_enhancements_cmd {
+            c.send(iface).await?;
+        }
+        if let Some(c) = self.second_precharge_period_cmd {
+            c.send(iface).await?;
+        }
+        if let Some(c) = self.precharge_voltage_cmd {
+            c.send(iface).await?;
+        }
+        if let Some(c) = self.com_deselect_voltage_cmd {
+            c.send(iface).await?;
+        }
         Ok(())
     }
 }

@@ -19,10 +19,20 @@ pub mod region;
 
 use crate::command::consts::*;
 use crate::command::*;
+#[cfg(feature = "async")]
+use crate::command::{BufCommandAsync, CommandAsync};
 use crate::config::{Config, PersistentConfig};
+#[cfg(feature = "async")]
+use crate::config::{ConfigAsync, PersistentConfigAsync};
 use crate::display::overscanned_region::OverscannedRegion;
+#[cfg(feature = "async")]
+use crate::display::overscanned_region::OverscannedRegionAsync;
 use crate::display::region::Region;
-use crate::interface;
+#[cfg(feature = "async")]
+use crate::display::region::RegionAsync;
+use crate::interface::DisplayInterface;
+#[cfg(feature = "async")]
+use crate::interface::DisplayInterfaceAsync;
 
 /// A pixel coordinate pair of `column` and `row`. `column` must be in the range [0,
 /// `consts::PIXEL_COL_MAX`], and `row` must be in the range [0, `consts::PIXEL_ROW_MAX`].
@@ -30,19 +40,35 @@ use crate::interface;
 pub struct PixelCoord(pub i16, pub i16);
 
 /// A driver for an SSD1322 display.
-pub struct Display<DI>
-where
-    DI: interface::DisplayInterface,
-{
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(feature = "async", idents(PersistentConfig(async = "PersistentConfigAsync")))
+)]
+pub struct Display<DI> {
     iface: DI,
     display_size: PixelCoord,
     display_offset: PixelCoord,
     persistent_config: Option<PersistentConfig>,
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            DisplayInterface(async = "DisplayInterfaceAsync"),
+            Region(async = "RegionAsync"),
+            OverscannedRegion(async = "OverscannedRegionAsync"),
+            Command(async = "CommandAsync"),
+            BufCommand(async = "BufCommandAsync"),
+            Config(async = "ConfigAsync"),
+            PersistentConfig(async = "PersistentConfigAsync")
+        )
+    )
+)]
 impl<DI> Display<DI>
 where
-    DI: interface::DisplayInterface,
+    DI: DisplayInterface,
 {
     /// Construct a new display driver for a display with viewable dimensions `display_size`, which
     /// is connected to the interface `iface`.
@@ -76,37 +102,53 @@ where
     }
 
     /// Initialize the display with a config message.
-    pub fn init(&mut self, config: Config) -> Result<(), CommandError<DI::Error>> {
-        self.sleep(true)?;
-        Command::SetDisplayMode(DisplayMode::BlankDark).send(&mut self.iface)?;
-        config.send(&mut self.iface)?;
+    pub async fn init(&mut self, config: Config) -> Result<(), CommandError<DI::Error>> {
+        self.sleep(true).await?;
+        Command::SetDisplayMode(DisplayMode::BlankDark)
+            .send(&mut self.iface)
+            .await?;
+        config.send(&mut self.iface).await?;
         self.persistent_config = Some(config.persistent_config);
-        Command::SetMuxRatio(self.display_size.1 as u8).send(&mut self.iface)?;
-        Command::SetDisplayOffset(self.display_offset.1 as u8).send(&mut self.iface)?;
-        Command::SetStartLine(0).send(&mut self.iface)?;
-        self.persistent_config.as_ref().unwrap().send(
-            &mut self.iface,
-            IncrementAxis::Horizontal,
-            ColumnRemap::Forward,
-            NibbleRemap::Forward,
-        )?;
-        self.sleep(false)?;
-        Command::SetDisplayMode(DisplayMode::Normal).send(&mut self.iface)
+        Command::SetMuxRatio(self.display_size.1 as u8)
+            .send(&mut self.iface)
+            .await?;
+        Command::SetDisplayOffset(self.display_offset.1 as u8)
+            .send(&mut self.iface)
+            .await?;
+        Command::SetStartLine(0).send(&mut self.iface).await?;
+        self.persistent_config
+            .as_ref()
+            .unwrap()
+            .send(
+                &mut self.iface,
+                IncrementAxis::Horizontal,
+                ColumnRemap::Forward,
+                NibbleRemap::Forward,
+            )
+            .await?;
+        self.sleep(false).await?;
+        Command::SetDisplayMode(DisplayMode::Normal)
+            .send(&mut self.iface)
+            .await
     }
 
     /// Control sleep mode.
-    pub fn sleep(&mut self, enabled: bool) -> Result<(), CommandError<DI::Error>> {
-        Command::SetSleepMode(enabled).send(&mut self.iface)
+    pub async fn sleep(&mut self, enabled: bool) -> Result<(), CommandError<DI::Error>> {
+        Command::SetSleepMode(enabled).send(&mut self.iface).await
     }
 
     /// Control the master contrast.
-    pub fn contrast(&mut self, contrast: u8) -> Result<(), CommandError<DI::Error>> {
-        Command::SetMasterContrast(contrast).send(&mut self.iface)
+    pub async fn contrast(&mut self, contrast: u8) -> Result<(), CommandError<DI::Error>> {
+        Command::SetMasterContrast(contrast)
+            .send(&mut self.iface)
+            .await
     }
 
     /// Set the display brightness look-up table.
-    pub fn gray_scale_table(&mut self, table: &[u8]) -> Result<(), CommandError<DI::Error>> {
-        BufCommand::SetGrayScaleTable(table).send(&mut self.iface)
+    pub async fn gray_scale_table(&mut self, table: &[u8]) -> Result<(), CommandError<DI::Error>> {
+        BufCommand::SetGrayScaleTable(table)
+            .send(&mut self.iface)
+            .await
     }
 
     /// Set the vertical pan.
@@ -114,8 +156,8 @@ where
     /// This uses the `Command::SetStartLine` feature to shift the display RAM row addresses
     /// relative to the active set of COM lines, allowing any display-height-sized window of the
     /// entire 128 rows of display RAM to be made visible.
-    pub fn vertical_pan(&mut self, offset: u8) -> Result<(), CommandError<DI::Error>> {
-        Command::SetStartLine(offset).send(&mut self.iface)
+    pub async fn vertical_pan(&mut self, offset: u8) -> Result<(), CommandError<DI::Error>> {
+        Command::SetStartLine(offset).send(&mut self.iface).await
     }
 
     /// Construct a rectangular region onto which to draw image data.
@@ -201,14 +243,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::{PixelCoord as Px, *};
-    use interface::test_spy::{Sent, TestSpyInterface};
+    #[cfg(feature = "async")]
+    use crate::config::ConfigAsync;
+    #[cfg(feature = "async")]
+    use crate::display::DisplayAsync;
+    use crate::interface::test_spy::{Sent, TestSpyInterface};
 
-    #[test]
-    fn init_defaults() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn init_defaults() {
         let di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         #[cfg_attr(rustfmt, rustfmt_skip)]
         di.check_multi(sends!(
             0xAE, // sleep enable
@@ -222,8 +273,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn init_many_options() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn init_many_options() {
         let di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(256, 128), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive)
@@ -234,7 +290,7 @@ mod tests {
             .second_precharge_period(4)
             .precharge_voltage(5)
             .com_deselect_voltage(6);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         #[cfg_attr(rustfmt, rustfmt_skip)]
         di.check_multi(sends!(
             0xAE, // sleep enable
@@ -255,12 +311,17 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn init_row_offset() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn init_row_offset() {
         let di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 32));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         #[cfg_attr(rustfmt, rustfmt_skip)]
         di.check_multi(sends!(
             0xAE, // sleep enable
@@ -274,12 +335,17 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn region_build() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn region_build() {
         let di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
 
         // In range, correctly ordered, and columns in 4s.
         assert!(disp.region(Px(12, 10), Px(20, 12)).is_ok());
@@ -302,12 +368,17 @@ mod tests {
         assert!(disp.region(Px(4, 60), Px(20, 130)).is_err());
     }
 
-    #[test]
-    fn overscanned_region_build() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn overscanned_region_build() {
         let di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
 
         // Correctly ordered, and columns in 4s.
         assert!(disp.overscanned_region(Px(12, 10), Px(20, 12)).is_ok());

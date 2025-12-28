@@ -1,9 +1,9 @@
 [package]
 name = "ssd1322"
 description = "SPI driver for the SSD1322 OLED display controller"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Kyle Schaffrick <kyle@raidi.us>"]
-edition = "2018"
+edition = "2021"
 keywords = ["no-std", "ssd1322", "oled", "embedded", "embedded-hal-driver"]
 repository = "https://github.com/edarc/ssd1322"
 readme = "README.md"
@@ -12,15 +12,22 @@ exclude = [
 	".gitignore",
 	"ferris-on-nhd.jpg",
 ]
+rust-version = "1.75.0"
 
 [dependencies]
-embedded-hal = "0.2"
-nb = "0.1"
+embedded-hal = "1.0.0"
+embedded-hal-async = { version = "1.0.0", optional = true }
+maybe-async-cfg = "0.2.4"
+heapless = "0.8"
 
 [dependencies.itertools]
 version = "0.7"
 default-features = false
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
 [features]
 default = ["std"]
 std = []
+async = ["dep:embedded-hal-async"]

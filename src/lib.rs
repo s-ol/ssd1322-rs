@@ -1,12 +1,17 @@
 //! Driver library for the Solomon Systech SSD1322 dot matrix OLED display driver.
 //!
 //! This driver is intended to work on embedded platforms using any implementation of the
-//! `embedded-hal` trait library.
+//! `embedded-hal` trait library. Both synchronous and asynchronous interfaces are supported.
 //!
 //! Because the SSD1322 supports displays as large as 480x128 @ 4bpp, the primary API uses a
 //! `Region` abstraction to allow writing a stream of pixel data from an iterator onto a
 //! rectangular sub-region of the display area. This avoids the requirement to buffer the entire
 //! display RAM in the host, since such a buffer would consume a colossal (for a μC) 30kiB of RAM.
+//!
+//! # Async Support
+//!
+//! This crate supports async operations when the `async` feature is enabled. The async API mirrors
+//! the synchronous API but uses async traits and methods.
 //!
 //! To use the driver:
 //!
@@ -36,6 +41,7 @@
 //! Example code is available in the `examples` folder.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(async_fn_in_trait)]
 
 #[cfg(feature = "std")]
 extern crate core;
@@ -50,3 +56,11 @@ pub use crate::command::{consts, ComLayout, ComScanDirection};
 pub use crate::config::Config;
 pub use crate::display::{Display, PixelCoord};
 pub use crate::interface::spi::SpiInterface;
+
+// Async re-exports
+#[cfg(feature = "async")]
+pub use crate::config::ConfigAsync;
+#[cfg(feature = "async")]
+pub use crate::display::DisplayAsync;
+#[cfg(feature = "async")]
+pub use crate::interface::spi::SpiInterfaceAsync;

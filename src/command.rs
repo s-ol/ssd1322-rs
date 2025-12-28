@@ -7,6 +7,8 @@
 
 use crate::command::consts::*;
 use crate::interface::DisplayInterface;
+#[cfg(feature = "async")]
+use crate::interface::DisplayInterfaceAsync;
 
 pub mod consts {
     //! Constants describing max supported display size and the display RAM layout.
@@ -119,6 +121,7 @@ pub enum DisplayMode {
 /// Enumerates most of the valid commands that can be sent to the SSD1322 along with their
 /// parameter values. Commands which accept an array of similar "arguments" as a slice are encoded
 /// by `BufCommand` instead to avoid lifetime parameters on this enum.
+#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async"))]
 #[derive(Clone, Copy)]
 pub enum Command {
     /// Enable the gray scale gamma table (see `BufCommand::SetGrayScaleTable`).
@@ -203,6 +206,7 @@ pub enum Command {
 /// Enumerates commands that can be sent to the SSD1322 which accept a slice argument buffer. This
 /// is separated from `Command` so that the lifetime parameter of the argument buffer slice does
 /// not pervade code which never invokes these two commands.
+#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async"))]
 pub enum BufCommand<'buf> {
     /// Set the gray scale gamma table. Each byte 0-14 can range from 0-180 and sets the pixel
     /// drive pulse width in DCLKs. Bytes 0->14 adjust the gamma setting for grayscale levels
@@ -228,7 +232,7 @@ pub enum CommandError<IE> {
     BadTableLength,
 }
 
-impl<IE > CommandError<IE> {
+impl<IE> CommandError<IE> {
     /// Unwrap a `CommandError` that is assumed to be of the `InterfaceError` variant, or panic if
     /// it is any other variant. This is particularly used inside the region abstractions where we
     /// assume that non-interface-related errors are prevented by the correctness checks performed
@@ -242,36 +246,26 @@ impl<IE > CommandError<IE> {
     }
 }
 
-macro_rules! ok_command {
-    ($buf:ident, $cmd:expr,[]) => {
-        Ok(($cmd, &$buf[..0]))
-    };
-    ($buf:ident, $cmd:expr,[$arg0:expr]) => {{
-        $buf[0] = $arg0;
-        Ok(($cmd, &$buf[..1]))
-    }};
-    ($buf:ident, $cmd:expr,[$arg0:expr, $arg1:expr]) => {{
-        $buf[0] = $arg0;
-        $buf[1] = $arg1;
-        Ok(($cmd, &$buf[..2]))
-    }};
-}
-
+#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async"))]
 impl Command {
-    /// Transmit the command encoded by `self` to the display on interface `iface`.
-    pub fn send<DI>(self, iface: &mut DI) -> Result<(), CommandError<DI::Error>>
-    where
-        DI: DisplayInterface,
-    {
+    fn encode(self) -> Result<(u8, [u8; 2], usize), CommandError<()>> {
         let mut arg_buf = [0u8; 2];
-        let (cmd, data) = match self {
-            Command::EnableGrayScaleTable => ok_command!(arg_buf, 0x00, []),
+        match self {
+            Command::EnableGrayScaleTable => Ok((0x00, arg_buf, 0)),
             Command::SetColumnAddress(start, end) => match (start, end) {
-                (0..=BUF_COL_MAX, 0..=BUF_COL_MAX) => ok_command!(arg_buf, 0x15, [start, end]),
+                (0..=BUF_COL_MAX, 0..=BUF_COL_MAX) => {
+                    arg_buf[0] = start;
+                    arg_buf[1] = end;
+                    Ok((0x15, arg_buf, 2))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
             Command::SetRowAddress(start, end) => match (start, end) {
-                (0..=PIXEL_ROW_MAX, 0..=PIXEL_ROW_MAX) => ok_command!(arg_buf, 0x75, [start, end]),
+                (0..=PIXEL_ROW_MAX, 0..=PIXEL_ROW_MAX) => {
+                    arg_buf[0] = start;
+                    arg_buf[1] = end;
+                    Ok((0x75, arg_buf, 2))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
             Command::SetRemapping(
@@ -302,51 +296,65 @@ impl Command {
                     ComLayout::Interlaced => (0x20, 0x01),
                     ComLayout::DualProgressive => (0x00, 0x11),
                 };
-                ok_command!(arg_buf, 0xA0, [ia | cr | nr | csd | interlace, dual_com])
+                arg_buf[0] = ia | cr | nr | csd | interlace;
+                arg_buf[1] = dual_com;
+                Ok((0xA0, arg_buf, 2))
             }
             Command::SetStartLine(line) => match line {
-                0..=PIXEL_ROW_MAX => ok_command!(arg_buf, 0xA1, [line]),
+                0..=PIXEL_ROW_MAX => {
+                    arg_buf[0] = line;
+                    Ok((0xA1, arg_buf, 1))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
             Command::SetDisplayOffset(line) => match line {
-                0..=PIXEL_ROW_MAX => ok_command!(arg_buf, 0xA2, [line]),
+                0..=PIXEL_ROW_MAX => {
+                    arg_buf[0] = line;
+                    Ok((0xA2, arg_buf, 1))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
-            Command::SetDisplayMode(mode) => ok_command!(
-                arg_buf,
+            Command::SetDisplayMode(mode) => Ok((
                 match mode {
                     DisplayMode::BlankDark => 0xA4,
                     DisplayMode::BlankBright => 0xA5,
                     DisplayMode::Normal => 0xA6,
                     DisplayMode::Inverse => 0xA7,
                 },
-                []
-            ),
+                arg_buf,
+                0,
+            )),
             Command::EnablePartialDisplay(start, end) => match (start, end) {
                 (0..=PIXEL_ROW_MAX, 0..=PIXEL_ROW_MAX) if start <= end => {
-                    ok_command!(arg_buf, 0xA8, [start, end])
+                    arg_buf[0] = start;
+                    arg_buf[1] = end;
+                    Ok((0xA8, arg_buf, 2))
                 }
                 _ => Err(CommandError::OutOfRange),
             },
-            Command::DisablePartialDisplay => ok_command!(arg_buf, 0xA9, []),
-            Command::SetSleepMode(ena) => ok_command!(
-                arg_buf,
+            Command::DisablePartialDisplay => Ok((0xA9, arg_buf, 0)),
+            Command::SetSleepMode(ena) => Ok((
                 match ena {
                     true => 0xAE,
                     false => 0xAF,
                 },
-                []
-            ),
+                arg_buf,
+                0,
+            )),
             Command::SetPhaseLengths(phase_1, phase_2) => match (phase_1, phase_2) {
                 (5..=31, 3..=15) => {
                     let p1 = (phase_1 - 1) >> 1;
                     let p2 = 0xF0 & (phase_2 << 4);
-                    ok_command!(arg_buf, 0xB1, [p1 | p2])
+                    arg_buf[0] = p1 | p2;
+                    Ok((0xB1, arg_buf, 1))
                 }
                 _ => Err(CommandError::OutOfRange),
             },
             Command::SetClockFoscDivset(fosc, divset) => match (fosc, divset) {
-                (0..=15, 0..=10) => ok_command!(arg_buf, 0xB3, [fosc << 4 | divset]),
+                (0..=15, 0..=10) => {
+                    arg_buf[0] = fosc << 4 | divset;
+                    Ok((0xB3, arg_buf, 1))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
             Command::SetDisplayEnhancements(ena_external_vsl, ena_enahnced_low_gs_quality) => {
@@ -358,58 +366,91 @@ impl Command {
                     true => 0xFD,
                     false => 0xB5,
                 };
-                ok_command!(arg_buf, 0xB4, [vsl, gs])
+                arg_buf[0] = vsl;
+                arg_buf[1] = gs;
+                Ok((0xB4, arg_buf, 2))
             }
             Command::SetSecondPrechargePeriod(period) => match period {
-                0..=15 => ok_command!(arg_buf, 0xB6, [period]),
+                0..=15 => {
+                    arg_buf[0] = period;
+                    Ok((0xB6, arg_buf, 1))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
-            Command::SetDefaultGrayScaleTable => ok_command!(arg_buf, 0xB9, []),
+            Command::SetDefaultGrayScaleTable => Ok((0xB9, arg_buf, 0)),
             Command::SetPreChargeVoltage(voltage) => match voltage {
-                0..=31 => ok_command!(arg_buf, 0xBB, [voltage]),
+                0..=31 => {
+                    arg_buf[0] = voltage;
+                    Ok((0xBB, arg_buf, 1))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
             Command::SetComDeselectVoltage(voltage) => match voltage {
-                0..=7 => ok_command!(arg_buf, 0xBE, [voltage]),
+                0..=7 => {
+                    arg_buf[0] = voltage;
+                    Ok((0xBE, arg_buf, 1))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
-            Command::SetContrastCurrent(current) => ok_command!(arg_buf, 0xC1, [current]),
+            Command::SetContrastCurrent(current) => {
+                arg_buf[0] = current;
+                Ok((0xC1, arg_buf, 1))
+            }
             Command::SetMasterContrast(contrast) => match contrast {
-                0..=15 => ok_command!(arg_buf, 0xC7, [contrast]),
+                0..=15 => {
+                    arg_buf[0] = contrast;
+                    Ok((0xC7, arg_buf, 1))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
             Command::SetMuxRatio(ratio) => match ratio {
-                16..=NUM_PIXEL_ROWS => ok_command!(arg_buf, 0xCA, [ratio - 1]),
+                16..=NUM_PIXEL_ROWS => {
+                    arg_buf[0] = ratio - 1;
+                    Ok((0xCA, arg_buf, 1))
+                }
                 _ => Err(CommandError::OutOfRange),
             },
             Command::SetCommandLock(ena) => {
-                let e = match ena {
+                arg_buf[0] = match ena {
                     true => 0x16,
                     false => 0x12,
                 };
-                ok_command!(arg_buf, 0xFD, [e])
+                Ok((0xFD, arg_buf, 1))
             }
-        }?;
+        }
+    }
+}
+
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(feature = "async", idents(DisplayInterface(async = "DisplayInterfaceAsync")))
+)]
+impl Command {
+    /// Transmit the command encoded by `self` to the display on interface `iface`.
+    pub async fn send<DI>(self, iface: &mut DI) -> Result<(), CommandError<DI::Error>>
+    where
+        DI: DisplayInterface,
+    {
+        let (cmd, data, len) = self.encode().map_err(|_| CommandError::OutOfRange)?;
         iface
             .send_command(cmd)
+            .await
             .map_err(|e| CommandError::InterfaceError(e))?;
-        if data.len() == 0 {
+        if len == 0 {
             Ok(())
         } else {
             iface
-                .send_data(data)
+                .send_data(&data[..len])
+                .await
                 .map_err(|e| CommandError::InterfaceError(e))
         }
     }
 }
 
+#[maybe_async_cfg::maybe(sync(keep_self), async(feature = "async"))]
 impl<'a> BufCommand<'a> {
-    /// Transmit the command encoded by `self` to the display on interface `iface`.
-    pub fn send<DI>(self, iface: &mut DI) -> Result<(), CommandError<DI::Error>>
-    where
-        DI: DisplayInterface,
-    {
-        let (cmd, data) = match self {
+    fn encode(self) -> Result<(u8, &'a [u8]), CommandError<()>> {
+        match self {
             BufCommand::SetGrayScaleTable(table) => {
                 // Each element must be greater than the previous one, and all must be
                 // between 0 and 180.
@@ -430,15 +471,35 @@ impl<'a> BufCommand<'a> {
                 }
             }
             BufCommand::WriteImageData(buf) => Ok((0x5C, buf)),
-        }?;
+        }
+    }
+}
+
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(feature = "async", idents(DisplayInterface(async = "DisplayInterfaceAsync")))
+)]
+impl<'a> BufCommand<'a> {
+    /// Transmit the command encoded by `self` to the display on interface `iface`.
+    pub async fn send<DI>(self, iface: &mut DI) -> Result<(), CommandError<DI::Error>>
+    where
+        DI: DisplayInterface,
+    {
+        let (cmd, data) = self.encode().map_err(|e| match e {
+            CommandError::OutOfRange => CommandError::OutOfRange,
+            CommandError::BadTableLength => CommandError::BadTableLength,
+            CommandError::InterfaceError(_) => unreachable!(),
+        })?;
         iface
             .send_command(cmd)
+            .await
             .map_err(|e| CommandError::InterfaceError(e))?;
         if data.len() == 0 {
             Ok(())
         } else {
             iface
                 .send_data(data)
+                .await
                 .map_err(|e| CommandError::InterfaceError(e))
         }
     }
@@ -450,38 +511,53 @@ mod tests {
     use crate::interface::test_spy::TestSpyInterface;
     use std::vec::Vec;
 
-    #[test]
-    fn set_column_address() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_column_address() {
         let mut di = TestSpyInterface::new();
-        Command::SetColumnAddress(23, 42).send(&mut di).unwrap();
+        Command::SetColumnAddress(23, 42).send(&mut di).await.unwrap();
         di.check(0x15, &[23, 42]);
         assert_eq!(
-            Command::SetColumnAddress(120, 42).send(&mut di),
+            Command::SetColumnAddress(120, 42).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::SetColumnAddress(23, 255).send(&mut di),
+            Command::SetColumnAddress(23, 255).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_row_address() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_row_address() {
         let mut di = TestSpyInterface::new();
-        Command::SetRowAddress(23, 42).send(&mut di).unwrap();
+        Command::SetRowAddress(23, 42).send(&mut di).await.unwrap();
         di.check(0x75, &[23, 42]);
         assert_eq!(
-            Command::SetRowAddress(128, 42).send(&mut di),
+            Command::SetRowAddress(128, 42).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::SetRowAddress(23, 255).send(&mut di),
+            Command::SetRowAddress(23, 255).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_remapping() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_remapping() {
         let mut di = TestSpyInterface::new();
         Command::SetRemapping(
             IncrementAxis::Horizontal,
@@ -491,6 +567,7 @@ mod tests {
             ComLayout::Progressive,
         )
         .send(&mut di)
+        .await
         .unwrap();
         di.check(0xA0, &[0x00, 0x01]);
 
@@ -503,6 +580,7 @@ mod tests {
             ComLayout::Interlaced,
         )
         .send(&mut di)
+        .await
         .unwrap();
         di.check(0xA0, &[0x37, 0x01]);
 
@@ -515,184 +593,249 @@ mod tests {
             ComLayout::DualProgressive,
         )
         .send(&mut di)
+        .await
         .unwrap();
         di.check(0xA0, &[0x14, 0x11]);
     }
 
-    #[test]
-    fn write_image_data() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn write_image_data() {
         let mut di = TestSpyInterface::new();
         let image_buf = (0..24).collect::<Vec<u8>>();
         BufCommand::WriteImageData(&image_buf[..])
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0x5C, &(0..24u8).collect::<Vec<_>>()[..]);
     }
 
-    #[test]
-    fn set_start_line() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_start_line() {
         let mut di = TestSpyInterface::new();
-        Command::SetStartLine(23).send(&mut di).unwrap();
+        Command::SetStartLine(23).send(&mut di).await.unwrap();
         di.check(0xA1, &[23]);
         assert_eq!(
-            Command::SetStartLine(128).send(&mut di),
+            Command::SetStartLine(128).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_display_offset() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_display_offset() {
         let mut di = TestSpyInterface::new();
-        Command::SetDisplayOffset(23).send(&mut di).unwrap();
+        Command::SetDisplayOffset(23).send(&mut di).await.unwrap();
         di.check(0xA2, &[23]);
         assert_eq!(
-            Command::SetDisplayOffset(128).send(&mut di),
+            Command::SetDisplayOffset(128).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_display_mode() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_display_mode() {
         let mut di = TestSpyInterface::new();
         Command::SetDisplayMode(DisplayMode::BlankDark)
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0xA4, &[]);
         di.clear();
         Command::SetDisplayMode(DisplayMode::BlankBright)
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0xA5, &[]);
         di.clear();
         Command::SetDisplayMode(DisplayMode::Normal)
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0xA6, &[]);
         di.clear();
         Command::SetDisplayMode(DisplayMode::Inverse)
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0xA7, &[]);
     }
 
-    #[test]
-    fn enable_partial_display() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn enable_partial_display() {
         let mut di = TestSpyInterface::new();
-        Command::EnablePartialDisplay(23, 42).send(&mut di).unwrap();
+        Command::EnablePartialDisplay(23, 42).send(&mut di).await.unwrap();
         di.check(0xA8, &[23, 42]);
         assert_eq!(
-            Command::EnablePartialDisplay(23, 128).send(&mut di),
+            Command::EnablePartialDisplay(23, 128).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::EnablePartialDisplay(128, 129).send(&mut di),
+            Command::EnablePartialDisplay(128, 129).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::EnablePartialDisplay(42, 23).send(&mut di),
+            Command::EnablePartialDisplay(42, 23).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn sleep_mode() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn sleep_mode() {
         let mut di = TestSpyInterface::new();
-        Command::SetSleepMode(true).send(&mut di).unwrap();
+        Command::SetSleepMode(true).send(&mut di).await.unwrap();
         di.check(0xAE, &[]);
         di.clear();
-        Command::SetSleepMode(false).send(&mut di).unwrap();
+        Command::SetSleepMode(false).send(&mut di).await.unwrap();
         di.check(0xAF, &[]);
     }
 
-    #[test]
-    fn set_phase_lengths() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_phase_lengths() {
         let mut di = TestSpyInterface::new();
-        Command::SetPhaseLengths(5, 3).send(&mut di).unwrap();
+        Command::SetPhaseLengths(5, 3).send(&mut di).await.unwrap();
         di.check(0xB1, &[0x32]);
         di.clear();
-        Command::SetPhaseLengths(5, 14).send(&mut di).unwrap();
+        Command::SetPhaseLengths(5, 14).send(&mut di).await.unwrap();
         di.check(0xB1, &[0xE2]);
         di.clear();
-        Command::SetPhaseLengths(7, 3).send(&mut di).unwrap();
+        Command::SetPhaseLengths(7, 3).send(&mut di).await.unwrap();
         di.check(0xB1, &[0x33]);
         di.clear();
-        Command::SetPhaseLengths(31, 15).send(&mut di).unwrap();
+        Command::SetPhaseLengths(31, 15).send(&mut di).await.unwrap();
         di.check(0xB1, &[0xFF]);
         assert_eq!(
-            Command::SetPhaseLengths(4, 3).send(&mut di),
+            Command::SetPhaseLengths(4, 3).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::SetPhaseLengths(32, 3).send(&mut di),
+            Command::SetPhaseLengths(32, 3).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::SetPhaseLengths(5, 2).send(&mut di),
+            Command::SetPhaseLengths(5, 2).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::SetPhaseLengths(5, 16).send(&mut di),
+            Command::SetPhaseLengths(5, 16).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_clock_fosc_divset() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_clock_fosc_divset() {
         let mut di = TestSpyInterface::new();
-        Command::SetClockFoscDivset(0, 0).send(&mut di).unwrap();
+        Command::SetClockFoscDivset(0, 0).send(&mut di).await.unwrap();
         di.check(0xB3, &[0x00]);
         di.clear();
-        Command::SetClockFoscDivset(15, 10).send(&mut di).unwrap();
+        Command::SetClockFoscDivset(15, 10).send(&mut di).await.unwrap();
         di.check(0xB3, &[0xFA]);
         assert_eq!(
-            Command::SetClockFoscDivset(0, 11).send(&mut di),
+            Command::SetClockFoscDivset(0, 11).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::SetClockFoscDivset(16, 0).send(&mut di),
+            Command::SetClockFoscDivset(16, 0).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_display_enhancements() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_display_enhancements() {
         let mut di = TestSpyInterface::new();
         Command::SetDisplayEnhancements(false, false)
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0xB4, &[0b10100010, 0b10110101]);
         di.clear();
         Command::SetDisplayEnhancements(true, false)
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0xB4, &[0b10100000, 0b10110101]);
         di.clear();
         Command::SetDisplayEnhancements(true, true)
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0xB4, &[0b10100000, 0b11111101]);
     }
 
-    #[test]
-    fn set_second_precharge_period() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_second_precharge_period() {
         let mut di = TestSpyInterface::new();
-        Command::SetSecondPrechargePeriod(0).send(&mut di).unwrap();
+        Command::SetSecondPrechargePeriod(0).send(&mut di).await.unwrap();
         di.check(0xB6, &[0]);
         di.clear();
-        Command::SetSecondPrechargePeriod(15).send(&mut di).unwrap();
+        Command::SetSecondPrechargePeriod(15).send(&mut di).await.unwrap();
         di.check(0xB6, &[15]);
         di.clear();
         assert_eq!(
-            Command::SetSecondPrechargePeriod(16).send(&mut di),
+            Command::SetSecondPrechargePeriod(16).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_gray_scale_table() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_gray_scale_table() {
         let mut di = TestSpyInterface::new();
         BufCommand::SetGrayScaleTable(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
             .send(&mut di)
+            .await
             .unwrap();
         di.check(0xB8, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
         di.clear();
@@ -700,6 +843,7 @@ mod tests {
             166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180,
         ])
         .send(&mut di)
+        .await
         .unwrap();
         di.check(
             0xB8,
@@ -713,87 +857,116 @@ mod tests {
             BufCommand::SetGrayScaleTable(&[
                 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 181,
             ])
-            .send(&mut di),
+            .send(&mut di)
+            .await,
             Err(CommandError::OutOfRange)
         );
         // Non-increasing
         assert_eq!(
             BufCommand::SetGrayScaleTable(&[0, 1, 2, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
-                .send(&mut di),
+                .send(&mut di)
+                .await,
             Err(CommandError::OutOfRange)
         );
         // Too many values
         assert_eq!(
             BufCommand::SetGrayScaleTable(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-                .send(&mut di),
+                .send(&mut di)
+                .await,
             Err(CommandError::BadTableLength)
         );
         // Too few values
         assert_eq!(
             BufCommand::SetGrayScaleTable(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
-                .send(&mut di),
+                .send(&mut di)
+                .await,
             Err(CommandError::BadTableLength)
         );
     }
 
-    #[test]
-    fn set_pre_charge_voltage() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_pre_charge_voltage() {
         let mut di = TestSpyInterface::new();
-        Command::SetPreChargeVoltage(17).send(&mut di).unwrap();
+        Command::SetPreChargeVoltage(17).send(&mut di).await.unwrap();
         di.check(0xBB, &[17]);
         assert_eq!(
-            Command::SetPreChargeVoltage(32).send(&mut di),
+            Command::SetPreChargeVoltage(32).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_com_deselect_voltage() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_com_deselect_voltage() {
         let mut di = TestSpyInterface::new();
-        Command::SetComDeselectVoltage(3).send(&mut di).unwrap();
+        Command::SetComDeselectVoltage(3).send(&mut di).await.unwrap();
         di.check(0xBE, &[3]);
         assert_eq!(
-            Command::SetComDeselectVoltage(8).send(&mut di),
+            Command::SetComDeselectVoltage(8).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_master_contrasat() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_master_contrasat() {
         let mut di = TestSpyInterface::new();
-        Command::SetMasterContrast(3).send(&mut di).unwrap();
+        Command::SetMasterContrast(3).send(&mut di).await.unwrap();
         di.check(0xC7, &[3]);
         assert_eq!(
-            Command::SetMasterContrast(16).send(&mut di),
+            Command::SetMasterContrast(16).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_mux_ratio() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_mux_ratio() {
         let mut di = TestSpyInterface::new();
-        Command::SetMuxRatio(128).send(&mut di).unwrap();
+        Command::SetMuxRatio(128).send(&mut di).await.unwrap();
         di.check(0xCA, &[127]);
         di.clear();
-        Command::SetMuxRatio(16).send(&mut di).unwrap();
+        Command::SetMuxRatio(16).send(&mut di).await.unwrap();
         di.check(0xCA, &[15]);
         assert_eq!(
-            Command::SetMuxRatio(15).send(&mut di),
+            Command::SetMuxRatio(15).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
         assert_eq!(
-            Command::SetMuxRatio(129).send(&mut di),
+            Command::SetMuxRatio(129).send(&mut di).await,
             Err(CommandError::OutOfRange)
         );
     }
 
-    #[test]
-    fn set_command_lock() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Command(async = "CommandAsync"), BufCommand(async = "BufCommandAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn set_command_lock() {
         let mut di = TestSpyInterface::new();
-        Command::SetCommandLock(true).send(&mut di).unwrap();
+        Command::SetCommandLock(true).send(&mut di).await.unwrap();
         di.check(0xFD, &[0b00010110]);
         di.clear();
-        Command::SetCommandLock(false).send(&mut di).unwrap();
+        Command::SetCommandLock(false).send(&mut di).await.unwrap();
         di.check(0xFD, &[0b00010010]);
     }
 }

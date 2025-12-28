@@ -8,7 +8,11 @@ use itertools::iproduct;
 use crate::command::consts::*;
 use crate::display::region::{Pack8to4, Region};
 use crate::display::PixelCoord;
-use crate::interface;
+use crate::interface::DisplayInterface;
+#[cfg(feature = "async")]
+use crate::display::region::RegionAsync;
+#[cfg(feature = "async")]
+use crate::interface::DisplayInterfaceAsync;
 
 /// A handle to a rectangular region which can be drawn into, but which is permitted to have
 /// portions that lie outside the viewable area of the display. Pixels that fall outside the
@@ -21,9 +25,19 @@ use crate::interface;
 ///
 /// These are intended to be short-lived, and contain a mutable borrow of the display that issued
 /// them so clashing writes are prevented.
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            DisplayInterface(async = "DisplayInterfaceAsync"),
+            Region(async = "RegionAsync")
+        )
+    )
+)]
 pub struct OverscannedRegion<'di, DI>
 where
-    DI: 'di + interface::DisplayInterface,
+    DI: 'di + DisplayInterface,
 {
     viewable_region: Option<Region<'di, DI>>,
     upper_left: PixelCoord,
@@ -44,9 +58,19 @@ fn in_range<T: PartialOrd>(x: T, lo: T, hi: T) -> bool {
     x >= lo && x < hi
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            DisplayInterface(async = "DisplayInterfaceAsync"),
+            Region(async = "RegionAsync")
+        )
+    )
+)]
 impl<'di, DI> OverscannedRegion<'di, DI>
 where
-    DI: 'di + interface::DisplayInterface,
+    DI: 'di + DisplayInterface,
 {
     /// Construct a new region. This is only called by the factory method
     /// `Display::overscanned_region`, which checks the region coordinates are correctly ordered,
@@ -87,7 +111,7 @@ where
     /// values of horizontally-adjacent pixels. Pixels are drawn left-to-right and top-to-bottom.
     /// The sequence of pixels is filtered such that only pixels which intersect the displayable
     /// area are transmitted to the hardware.
-    pub fn draw_packed<I>(&mut self, iter: I) -> Result<(), DI::Error>
+    pub async fn draw_packed<I>(&mut self, iter: I) -> Result<(), DI::Error>
     where
         I: Iterator<Item = u8>,
     {
@@ -109,38 +133,52 @@ where
             .as_mut()
             .unwrap()
             .draw_packed(only_viewable)
+            .await
     }
 
     /// Draw unpacked pixel image data into the region, where each byte independently represents a
     /// single pixel intensity value in the range [0, 15]. Pixels are drawn left-to-right and
     /// top-to-bottom. The sequence of pixels is filtered such that only pixels which intersect the
     /// displayable area are transmitted to the hardware.
-    pub fn draw<I>(&mut self, iter: I) -> Result<(), DI::Error>
+    pub async fn draw<I>(&mut self, iter: I) -> Result<(), DI::Error>
     where
         I: Iterator<Item = u8>,
     {
-        self.draw_packed(Pack8to4(iter))
+        self.draw_packed(Pack8to4(iter)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::command::{ComLayout, ComScanDirection};
+    #[cfg(not(feature = "async"))]
     use crate::config::Config;
-    use crate::display::{Display, PixelCoord as Px};
+    #[cfg(feature = "async")]
+    use crate::config::ConfigAsync;
+    #[cfg(not(feature = "async"))]
+    use crate::display::Display;
+    use crate::display::PixelCoord as Px;
+    #[cfg(feature = "async")]
+    use crate::display::DisplayAsync;
     use crate::interface::test_spy::{Sent, TestSpyInterface};
 
-    #[test]
-    fn draw_packed_interior() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_interior() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.overscanned_region(Px(12, 10), Px(16, 12)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -151,17 +189,23 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn draw_packed_complete_crop() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_complete_crop() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.overscanned_region(Px(-16, -5), Px(-12, -3)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -172,6 +216,7 @@ mod tests {
             let mut region = disp.overscanned_region(Px(16, 132), Px(20, 134)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -179,17 +224,23 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn draw_packed_crop_row_edge() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_crop_row_edge() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.overscanned_region(Px(16, -1), Px(20, 1)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -203,6 +254,7 @@ mod tests {
             let mut region = disp.overscanned_region(Px(16, 127), Px(20, 129)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -213,12 +265,17 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn draw_packed_crop_col_edge() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_crop_col_edge() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.overscanned_region(Px(-4, 10), Px(4, 12)).unwrap();
@@ -228,6 +285,7 @@ mod tests {
                         .iter()
                         .cloned(),
                 )
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -245,6 +303,7 @@ mod tests {
                         .iter()
                         .cloned(),
                 )
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -255,12 +314,17 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn draw_packed_crop_corner() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_crop_corner() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.overscanned_region(Px(-4, -1), Px(4, 1)).unwrap();
@@ -270,6 +334,7 @@ mod tests {
                         .iter()
                         .cloned(),
                 )
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -287,6 +352,7 @@ mod tests {
                         .iter()
                         .cloned(),
                 )
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -297,17 +363,23 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn draw_packed_display_column_offset_interior() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_display_column_offset_interior() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(64, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.overscanned_region(Px(0, 10), Px(8, 12)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -318,17 +390,23 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn draw_packed_display_column_offset_crop_col() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_display_column_offset_crop_col() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(24, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.overscanned_region(Px(-4, 10), Px(4, 11)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -342,6 +420,7 @@ mod tests {
             let mut region = disp.overscanned_region(Px(124, 10), Px(132, 11)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]

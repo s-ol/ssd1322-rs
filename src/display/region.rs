@@ -1,17 +1,23 @@
 //! Region abstraction for drawing into rectangular regions of the display.
 
-use nb;
-
 use crate::command::{BufCommand, Command, CommandError};
+#[cfg(feature = "async")]
+use crate::command::{BufCommandAsync, CommandAsync};
 use crate::display::PixelCoord;
-use crate::interface;
+use crate::interface::DisplayInterface;
+#[cfg(feature = "async")]
+use crate::interface::DisplayInterfaceAsync;
 
 /// A handle to a rectangular region of a display which can be drawn into. These are intended to be
 /// short-lived, and contain a mutable borrow of the display that issued them so clashing writes
 /// are prevented.
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(feature = "async", idents(DisplayInterface(async = "DisplayInterfaceAsync")))
+)]
 pub struct Region<'di, DI>
 where
-    DI: 'di + interface::DisplayInterface,
+    DI: 'di + DisplayInterface,
 {
     iface: &'di mut DI,
     top: u8,
@@ -21,9 +27,20 @@ where
     pixel_cols: u16,
 }
 
+#[maybe_async_cfg::maybe(
+    sync(keep_self),
+    async(
+        feature = "async",
+        idents(
+            DisplayInterface(async = "DisplayInterfaceAsync"),
+            Command(async = "CommandAsync"),
+            BufCommand(async = "BufCommandAsync")
+        )
+    )
+)]
 impl<'di, DI> Region<'di, DI>
 where
-    DI: 'di + interface::DisplayInterface,
+    DI: 'di + DisplayInterface,
 {
     /// Construct a new region. This is only called by the factory method `Display::region`, which
     /// checks that the region coordinates are within the viewable area and correctly ordered, and
@@ -42,65 +59,38 @@ where
 
     /// Draw packed-pixel image data into the region, such that each byte is two 4-bit gray scale
     /// values of horizontally-adjacent pixels. Pixels are drawn left-to-right and top-to-bottom.
-    pub fn draw_packed<I>(&mut self, mut iter: I) -> Result<(), DI::Error>
+    pub async fn draw_packed<I>(&mut self, iter: I) -> Result<(), DI::Error>
     where
         I: Iterator<Item = u8>,
     {
-        // Set the row and column address registers and put the display in write mode. Unwrap all
-        // of the CommandErrors in this scope as interface errors, as all bounds checking should be
-        // done by the time we are here.
-        (|| {
-            Command::SetColumnAddress(self.buf_left, self.buf_left + self.buf_cols - 1)
-                .send(self.iface)?;
-            Command::SetRowAddress(self.top, self.top + self.rows - 1).send(self.iface)?;
-            BufCommand::WriteImageData(&[]).send(self.iface)?;
-            Ok(())
-        })()
-        .map_err(CommandError::unwrap_interface)?;
+        // Set the row and column address registers and put the display in write mode.
+        Command::SetColumnAddress(self.buf_left, self.buf_left + self.buf_cols - 1)
+            .send(self.iface)
+            .await
+            .map_err(CommandError::unwrap_interface)?;
+        Command::SetRowAddress(self.top, self.top + self.rows - 1)
+            .send(self.iface)
+            .await
+            .map_err(CommandError::unwrap_interface)?;
+        BufCommand::WriteImageData(&[])
+            .send(self.iface)
+            .await
+            .map_err(CommandError::unwrap_interface)?;
 
-        // Paint the region using asynchronous writes so that iter.next() may run concurrently with
-        // the SPI write cycle for a small throughput win.
+        // Collect bytes from iterator and send
         let region_total_bytes = self.pixel_cols as usize * self.rows as usize / 2;
-        let mut total_written = 0;
-        let mut next_byte: u8;
-
-        loop {
-            // Break early if we have copied enough bytes to exactly fill the region.
-            if total_written >= region_total_bytes {
-                break;
-            }
-
-            // Break early if the iterator runs out of bytes.
-            match iter.next() {
-                Some(pixels) => {
-                    total_written += 1;
-                    next_byte = pixels;
-                }
-                None => break,
-            }
-
-            // Write the byte to the interface FIFO. If the FIFO is full then poll it until the
-            // send succeeds before continuing the outer loop to consume the next byte from the
-            // iterator.
-            loop {
-                match self.iface.send_data_async(next_byte) {
-                    Ok(()) => break,
-                    Err(nb::Error::WouldBlock) => {}
-                    Err(nb::Error::Other(e)) => return Err(e),
-                }
-            }
-        }
-        Ok(())
+        let data: heapless::Vec<u8, 30720> = iter.take(region_total_bytes).collect();
+        self.iface.send_data(&data).await
     }
 
     /// Draw unpacked pixel image data into the region, where each byte independently represents a
     /// single pixel intensity value in the range [0, 15]. Pixels are drawn left-to-right and
     /// top-to-bottom.
-    pub fn draw<I>(&mut self, iter: I) -> Result<(), DI::Error>
+    pub async fn draw<I>(&mut self, iter: I) -> Result<(), DI::Error>
     where
         I: Iterator<Item = u8>,
     {
-        self.draw_packed(Pack8to4(iter))
+        self.draw_packed(Pack8to4(iter)).await
     }
 }
 
@@ -128,21 +118,34 @@ where
 #[cfg(test)]
 mod tests {
     use crate::command::{ComLayout, ComScanDirection};
+    #[cfg(not(feature = "async"))]
     use crate::config::Config;
-    use crate::display::{Display, PixelCoord as Px};
+    #[cfg(feature = "async")]
+    use crate::config::ConfigAsync;
+    #[cfg(not(feature = "async"))]
+    use crate::display::Display;
+    use crate::display::PixelCoord as Px;
+    #[cfg(feature = "async")]
+    use crate::display::DisplayAsync;
     use crate::interface::test_spy::{Sent, TestSpyInterface};
 
-    #[test]
-    fn draw_packed() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.region(Px(12, 10), Px(16, 12)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -153,17 +156,23 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn draw_packed_end_at_region_filled() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_end_at_region_filled() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.region(Px(12, 10), Px(16, 12)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF, 0xAA].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -175,17 +184,23 @@ mod tests {
         di.clear();
     }
 
-    #[test]
-    fn draw_packed_end_at_iterator_exhausted() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_end_at_iterator_exhausted() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(0, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.region(Px(12, 10), Px(16, 12)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -197,17 +212,23 @@ mod tests {
         di.clear();
     }
 
-    #[test]
-    fn draw_packed_display_column_offset() {
+    #[maybe_async_cfg::maybe(
+        sync(cfg(not(feature = "async")), keep_self),
+        async(cfg(feature = "async"), keep_self, idents(Display(async = "DisplayAsync"), Config(async = "ConfigAsync")))
+    )]
+    #[cfg_attr(not(feature = "async"), test)]
+    #[cfg_attr(feature = "async", tokio::test)]
+    async fn draw_packed_display_column_offset() {
         let mut di = TestSpyInterface::new();
         let mut disp = Display::new(di.split(), Px(128, 64), Px(64, 0));
         let cfg = Config::new(ComScanDirection::RowZeroLast, ComLayout::DualProgressive);
-        disp.init(cfg).unwrap();
+        disp.init(cfg).await.unwrap();
         di.clear();
         {
             let mut region = disp.region(Px(0, 10), Px(4, 12)).unwrap();
             region
                 .draw_packed([0xDE, 0xAD, 0xBE, 0xEF].iter().cloned())
+                .await
                 .unwrap();
         }
         #[cfg_attr(rustfmt, rustfmt_skip)]
