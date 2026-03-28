@@ -49,6 +49,12 @@ pub mod command;
 pub mod config;
 pub mod display;
 
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+pub mod testing;
+
 // Re-exports for primary API.
 pub use crate::{
     command::{consts, ComLayout, ComScanDirection},

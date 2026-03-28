@@ -469,8 +469,9 @@ impl<'a> BufCommand<'a> {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
-    use crate::interface::test_spy::TestSpyInterface;
+    use crate::testing::TestSpyInterface;
     use std::vec::Vec;
 
     #[test]

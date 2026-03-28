@@ -144,7 +144,8 @@ mod tests {
     use crate::command::{ComLayout, ComScanDirection};
     use crate::config::Config;
     use crate::display::{Display, PixelCoord as Px};
-    use crate::interface::test_spy::{Sent, TestSpyInterface};
+    use crate::sends;
+    use crate::testing::TestSpyInterface;
 
     #[test]
     fn draw_packed_interior() {

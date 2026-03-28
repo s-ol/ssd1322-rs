@@ -1,19 +1,6 @@
 //! The main API to the display driver. It provides a builder API to configure the display, and
 //! methods for obtaining `Region` instances which can be used to write image data to the display.
 
-// This has to be here in order to be usable by mods declared afterwards.
-#[cfg(test)]
-#[macro_use]
-pub mod testing {
-    macro_rules! send {
-        ([$($d:tt),*]) => {Sent::Data(vec![$($d,)*])};
-        ($c:tt) => {Sent::Cmd($c)};
-    }
-    macro_rules! sends {
-        ($($e:tt),*) => {&[$(send!($e),)*]};
-    }
-}
-
 pub mod overscanned_region;
 pub mod region;
 
@@ -238,7 +225,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{PixelCoord as Px, *};
-    use interface::test_spy::{Sent, TestSpyInterface};
+    use crate::sends;
+    use crate::testing::TestSpyInterface;
 
     #[test]
     fn init_defaults() {

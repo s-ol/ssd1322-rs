@@ -14,7 +14,7 @@ exclude = [
 ]
 
 [dependencies]
-display-interface = "0.5"
+display-interface = { git = "https://github.com/therealprof/display-interface.git", commit = "9b915f93e8665f56b47f11d4fe28c92c1db514bb" } # 0.5
 maybe-async-cfg = "0.2"
 
 [dependencies.itertools]
