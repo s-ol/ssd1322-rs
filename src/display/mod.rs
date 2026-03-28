@@ -238,10 +238,11 @@ mod tests {
         di.check_multi(sends!(
             0xAE, // sleep enable
             0xA4, // display blank
+            0xB9, // default grayscale table
+            0xA0, [0b00010100, 0b00010001], // remapping
             0xCA, [63], // mux ratio 64 lines
             0xA2, [0], // display offset 0
             0xA1, [0], // start line 0
-            0xA0, [0b00010100, 0b00010001], // remapping
             0xAF, // sleep disable
             0xA6 // display normal
         ));
@@ -264,6 +265,8 @@ mod tests {
         di.check_multi(sends!(
             0xAE, // sleep enable
             0xA4, // display blank
+            0xB9, // default grayscale table
+            0xA0, [0b00010100, 0b00010001], // remapping
             0xB1, [0xE2], // phase lengths
             0xC1, [160], // contrast current
             0xB3, [0x70], // clock
@@ -274,7 +277,6 @@ mod tests {
             0xCA, [127], // mux ratio 128 lines
             0xA2, [0], // display offset 0
             0xA1, [0], // start line 0
-            0xA0, [0b00010100, 0b00010001], // remapping
             0xAF, // sleep disable
             0xA6 // display normal
         ));
@@ -290,10 +292,11 @@ mod tests {
         di.check_multi(sends!(
             0xAE, // sleep enable
             0xA4, // display blank
+            0xB9, // default grayscale table
+            0xA0, [0b00010100, 0b00010001], // remapping
             0xCA, [63], // mux ratio 64 lines
             0xA2, [32], // display offset 32
             0xA1, [0], // start line 0
-            0xA0, [0b00010100, 0b00010001], // remapping
             0xAF, // sleep disable
             0xA6 // display normal
         ));
